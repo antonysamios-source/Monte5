@@ -106,5 +106,3 @@ with col2:
     st.write(f"**Implied Win %:** {implied_prob:.2%}")
     st.write(f"**Market Win %:** {market_prob:.2%}")
     st.write(f"**Bankroll After Bet:** £{bankroll - stake if ev > 0 else bankroll:.2f}")
-
-
