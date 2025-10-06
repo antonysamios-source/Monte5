@@ -1,137 +1,110 @@
+# tennis_simulator_app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
-from math import log, floor
 
-# Load player surface stats directly from GitHub
-@st.cache_data
-def load_stats():
-    url = "https://raw.githubusercontent.com/antonysamios-source/Monte5/main/player_surface_stats_master.csv"
-    df = pd.read_csv(url)
-    return df
-
-stats_df = load_stats()
-
-# App Layout
+# --- Settings ---
 st.set_page_config(layout="wide")
-st.title("🎾 Tennis Monte Carlo Simulator + Betting Tracker")
+st.title("Live Tennis Trading Simulator 🎾")
 
-col1, col2, col3 = st.columns([2, 2, 3])
+# --- Load Stats File from GitHub or Upload ---
+st.sidebar.header("📄 Load Player Data")
+
+csv_file = st.sidebar.file_uploader("Upload Player Stats CSV", type="csv")
+if csv_file:
+    stats_df = pd.read_csv(csv_file)
+else:
+    stats_df = pd.read_csv("https://raw.githubusercontent.com/antonysamios-source/Monte5/main/player_surface_stats_master.csv")
+
+# --- Helper Function to Get Stats ---
+def get_player_stats(name, surface, tour):
+    row = stats_df[(stats_df["player"] == name) & (stats_df["surface"] == surface) & (stats_df["tour"] == tour)]
+    if row.empty:
+        return 0.60, 0.35  # fallback values
+    return float(row["serve_win_pct"].values[0]), float(row["return_win_pct"].values[0])
+
+# --- UI Layout ---
+col1, col2 = st.columns([1, 3])
 
 with col1:
-    st.subheader("Player A")
-    player_a = st.selectbox("Select Player A", sorted(stats_df['player'].unique()), key="player_a")
-    sets_a = st.number_input("Sets Won", min_value=0, max_value=5, value=0, key="sets_a")
-    games_a = st.number_input("Games in Current Set", min_value=0, max_value=7, value=0, key="games_a")
-    points_a = st.number_input("Points", min_value=0, max_value=4, value=0, key="points_a")
+    st.markdown("## Scoreboard")
+    player_a = st.selectbox("Player A", options=sorted(stats_df["player"].unique()), key="a")
+    player_b = st.selectbox("Player B", options=sorted(stats_df["player"].unique()), key="b")
+    surface = st.selectbox("Surface", ["Clay", "Grass", "Hard"])
+    tour = st.radio("Tour", ["ATP", "WTA"], horizontal=True)
+    server = st.radio("Who is Serving?", [player_a, player_b], horizontal=True)
 
-with col2:
-    st.subheader("Player B")
-    player_b = st.selectbox("Select Player B", sorted(stats_df['player'].unique()), key="player_b")
-    sets_b = st.number_input("Sets Won", min_value=0, max_value=5, value=0, key="sets_b")
-    games_b = st.number_input("Games in Current Set", min_value=0, max_value=7, value=0, key="games_b")
-    points_b = st.number_input("Points", min_value=0, max_value=4, value=0, key="points_b")
+    # Score inputs (compact layout)
+    st.markdown("### Match Score")
+    sets_a = st.number_input(f"{player_a} Sets", min_value=0, max_value=5, value=0)
+    sets_b = st.number_input(f"{player_b} Sets", min_value=0, max_value=5, value=0)
+    games_a = st.number_input(f"{player_a} Games", min_value=0, max_value=7, value=0)
+    games_b = st.number_input(f"{player_b} Games", min_value=0, max_value=7, value=0)
+    points_a = st.number_input(f"{player_a} Points", min_value=0, max_value=4, value=0)
+    points_b = st.number_input(f"{player_b} Points", min_value=0, max_value=4, value=0)
 
-with col3:
-    st.subheader("Match Settings & Odds")
-    surface = st.selectbox("Surface", ["Hard", "Clay", "Grass"], key="surface")
-    format_sets = st.radio("Match Format (Best of)", [3, 5], key="format")
-    server = st.radio("Who is Serving?", [player_a, player_b], key="server")
-    bankroll = st.number_input("Your Bankroll (\u00a3)", min_value=10.0, value=1000.0, step=10.0)
+    # Odds and bankroll
     odds_a = st.number_input(f"Betfair Odds {player_a}", value=2.0, step=0.01, key="odds_a")
     odds_b = st.number_input(f"Betfair Odds {player_b}", value=2.0, step=0.01, key="odds_b")
-    kelly_fraction = st.slider("Kelly Multiplier", 0.0, 1.0, 0.5, 0.1, key="kelly")
-    commission = st.slider("Betfair Commission (%)", 0.0, 10.0, 5.0, 0.5, key="commission")
-    toggle_pressure = st.checkbox("Use Pressure Point Logic", value=True)
+    bankroll = st.number_input("Bankroll (£)", value=1000.0)
+    commission = st.slider("Betfair Commission (%)", 0.0, 10.0, 5.0)
+    use_pressure = st.checkbox("Use Pressure Point Logic", value=True)
+    half_kelly = st.checkbox("Use Half Kelly", value=False)
 
-# Score logic
-score_str = ["0", "15", "30", "40", "Ad"]
-def get_point_str(pa, pb):
-    if pa >= 4 or pb >= 4:
-        if abs(pa - pb) >= 2:
-            return f"Game {'A' if pa > pb else 'B'}"
-        elif pa == pb:
-            return "40-40"
-        elif pa > pb:
-            return "Ad A"
-        else:
-            return "Ad B"
+with col2:
+    st.markdown("## Simulation Results")
+
+    # Get serve/return stats
+    sa_serve, sa_return = get_player_stats(player_a, surface, tour)
+    sb_serve, sb_return = get_player_stats(player_b, surface, tour)
+
+    # Adjust for who is serving
+    if server == player_a:
+        server_win_prob = sa_serve
+        return_win_prob = sb_return
     else:
-        return f"{score_str[pa]} - {score_str[pb]}"
+        server_win_prob = sb_serve
+        return_win_prob = sa_return
 
-point_score = get_point_str(points_a, points_b)
-st.markdown(f"### Scoreboard \n**{player_a}** {sets_a}-{sets_b} **{player_b}**\n\nGames: {games_a}-{games_b} | Points: {point_score}")
+    # --- Pressure Point Logic ---
+    is_pressure_point = ((points_a >= 3 or points_b >= 3) or (games_a == 5 and games_b == 5))
+    if use_pressure and is_pressure_point:
+        server_win_prob += 0.02  # small pressure bonus
 
-# Get stats per surface
-def get_player_stats(player):
-    row = stats_df[(stats_df['player'] == player) & (stats_df['surface'] == surface)]
-    if row.empty:
-        return 0.60, 0.35  # Defaults
-    return float(row['serve_win'].values[0]), float(row['return_win'].values[0])
+    # --- Monte Carlo Simulation ---
+    st.write("Running simulation...")
+    simulations = 100_000
+    win_count = 0
 
-sa_serve, sa_return = get_player_stats(player_a)
-sb_serve, sb_return = get_player_stats(player_b)
-
-# Pressure multiplier logic
-def pressure_adjustment(pa, pb):
-    if not toggle_pressure:
-        return 1.0
-    if (pa, pb) in [(30, 40), (40, 30), (40, 40)] or pa >= 4 or pb >= 4:
-        return 1.10  # 10% boost under pressure
-    return 1.0
-
-# Monte Carlo simulation
-@st.cache_data(show_spinner=False)
-def simulate_win_probs(server, simulations=100000):
-    win_a, win_b = 0, 0
     for _ in range(simulations):
-        pa, pb = points_a, points_b
-        while True:
-            if server == player_a:
-                win_prob = sa_serve * pressure_adjustment(pa, pb)
-            else:
-                win_prob = (1 - sb_return) * pressure_adjustment(pa, pb)
-            if np.random.rand() < win_prob:
-                pa += 1
-            else:
-                pb += 1
-            if pa >= 4 and pa - pb >= 2:
-                win_a += 1
-                break
-            elif pb >= 4 and pb - pa >= 2:
-                win_b += 1
-                break
-    return win_a / simulations, win_b / simulations
+        p = server_win_prob
+        if np.random.rand() < p:
+            win_count += 1
 
-if st.button("Run Simulation"):
-    prob_a, prob_b = simulate_win_probs(server)
-    st.success(f"Simulated Probability {player_a}: {prob_a*100:.2f}% | {player_b}: {prob_b*100:.2f}%")
+    implied_prob = win_count / simulations
+    implied_odds = 1 / implied_prob if implied_prob > 0 else 1000
+    st.metric("Implied Odds", f"{implied_odds:.2f}")
 
-    imp_a = 1 / odds_a
-    imp_b = 1 / odds_b
-    ev_a = prob_a - imp_a
-    ev_b = prob_b - imp_b
+    # --- Expected Value and Bet Suggestion ---
+    market_odds = odds_a if server == player_a else odds_b
+    market_prob = 1 / market_odds
+    ev = implied_prob - market_prob
 
-    stake_a = max(2.0, floor((bankroll * kelly_fraction * ev_a) / (1 - odds_a))) if ev_a > 0 else 0
-    stake_b = max(2.0, floor((bankroll * kelly_fraction * ev_b) / (1 - odds_b))) if ev_b > 0 else 0
+    if ev > 0:
+        kelly_fraction = (ev / (1 - market_prob))
+        if half_kelly:
+            kelly_fraction *= 0.5
+        stake = max(2, kelly_fraction * bankroll)  # Min Betfair stake = £2
+        st.success(f"✅ Bet suggested: £{stake:.2f} on {server}")
+    else:
+        st.warning("❌ No value bet available — hold position or consider lay.")
 
-    st.info(f"Expected Value A: {ev_a:.4f}, Stake: \u00a3{stake_a:.2f}")
-    st.info(f"Expected Value B: {ev_b:.4f}, Stake: \u00a3{stake_b:.2f}")
+    # --- Position Tracking ---
+    st.markdown("### Position Overview")
+    st.write(f"**EV:** {ev:.4f}")
+    st.write(f"**Implied Win %:** {implied_prob:.2%}")
+    st.write(f"**Market Win %:** {market_prob:.2%}")
+    st.write(f"**Bankroll After Bet:** £{bankroll - stake if ev > 0 else bankroll:.2f}")
 
-    st.metric("Recommended Bet", f"{'Back ' + player_a if stake_a > 0 else 'Back ' + player_b if stake_b > 0 else 'No Bet'}")
-
-# Requirements.txt info (separately requested)
-requirements = """
-pandas
-numpy
-streamlit
-matplotlib
-seaborn
-"""
-with open("/mnt/data/requirements.txt", "w") as f:
-    f.write(requirements)
-
-st.sidebar.download_button("Download requirements.txt", "/mnt/data/requirements.txt")
 
