@@ -1,115 +1,135 @@
+# tennis_simulator_app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
-import requests
-from io import StringIO
+import random
+import math
+import matplotlib.pyplot as plt
 
-# --- Load Player Stats Data from GitHub ---
+# --- Load Data from GitHub ---
+DATA_URL = "https://raw.githubusercontent.com/antonysamios-source/Monte5/main/player_surface_stats_master.csv"
 @st.cache_data
-def load_data():
-    url = "https://raw.githubusercontent.com/antonysamios-source/Monte5/main/player_surface_stats_master.csv"
-    response = requests.get(url)
-    return pd.read_csv(StringIO(response.text))
+def load_stats():
+    return pd.read_csv(DATA_URL)
+stats_df = load_stats()
 
-stats_df = load_data()
+# --- SETTINGS ---
+st.set_page_config(page_title="Tennis Monte Carlo Simulator", layout="wide")
+st.title("🎾 Tennis Betting Simulator")
+st.markdown("##### Live In-Match Monte Carlo Engine with EV, Kelly Strategy & Pressure Logic")
 
-# --- Streamlit Config ---
-st.set_page_config(layout="wide")
-st.title("🎾 Tennis In-Play Betting Simulator")
+# --- HELPER FUNCTIONS ---
+def kelly_stake(prob, odds, bankroll, commission, min_bet=2.0, half=False):
+    k = (prob * (odds - 1) - (1 - prob)) / (odds - 1)
+    k = max(k, 0)
+    stake = k * bankroll / (2 if half else 1)
+    return round(stake if stake >= min_bet else (min_bet if stake > 0 else 0), 2)
+
+def simulate_game(p_win, pressure=False, pressure_adj=0.05):
+    if pressure:
+        p_win = min(1, p_win + (1 - p_win) * pressure_adj)
+    return random.random() < p_win
+
+def monte_sim(player_a_stats, player_b_stats, sets_target, score_state, pressure_adj=0.05):
+    wins = 0
+    total = 100000
+    for _ in range(total):
+        sa, sb = score_state['sets']
+        ga, gb = score_state['games']
+        serving = score_state['server']
+
+        while sa < sets_target and sb < sets_target:
+            p_serve = player_a_stats['serve'] if serving == 'A' else player_b_stats['serve']
+            p_return = player_b_stats['return'] if serving == 'A' else player_a_stats['return']
+            p_win = (p_serve + p_return) / 2
+            pressure = (ga == 5 and gb >= 5) or (sa == sets_target - 1 and sb == sets_target - 1)
+            game_won = simulate_game(p_win, pressure, pressure_adj)
+
+            if game_won:
+                if serving == 'A': ga += 1
+                else: gb += 1
+            else:
+                if serving == 'A': gb += 1
+                else: ga += 1
+
+            # Set win condition
+            if (ga >= 6 and ga - gb >= 2):
+                sa += 1
+                ga, gb = 0, 0
+            elif (gb >= 6 and gb - ga >= 2):
+                sb += 1
+                ga, gb = 0, 0
+
+            serving = 'B' if serving == 'A' else 'A'
+
+        if sa > sb:
+            wins += 1
+
+    return round(wins / total, 4)
+
+def get_stats(player, surface):
+    df = stats_df[(stats_df['player'] == player) & (stats_df['surface'] == surface)]
+    if not df.empty:
+        row = df.iloc[0]
+        return {'serve': row['serve_points_won_pct'], 'return': row['return_points_won_pct']}
+    return {'serve': 0.60, 'return': 0.40}  # fallback
+
+# --- USER INPUTS ---
 
 col1, col2 = st.columns(2)
 with col1:
-    st.header("Player A")
-    player_a = st.selectbox("Select Player A", sorted(stats_df["player"].unique()), key="player_a")
-    sets_a = st.number_input("Sets Won", 0, 5, 0, key="sets_a")
-    games_a = st.number_input("Games (Current Set)", 0, 7, 0, key="games_a")
-    points_a = st.number_input("Points", 0, 4, 0, key="points_a")
-
-with col2:
-    st.header("Player B")
-    player_b = st.selectbox("Select Player B", sorted(stats_df["player"].unique()), index=1, key="player_b")
-    sets_b = st.number_input("Sets Won", 0, 5, 0, key="sets_b")
-    games_b = st.number_input("Games (Current Set)", 0, 7, 0, key="games_b")
-    points_b = st.number_input("Points", 0, 4, 0, key="points_b")
-
-# --- Match Settings ---
-st.subheader("Match Settings")
-col3, col4, col5 = st.columns(3)
-with col3:
     surface = st.selectbox("Surface", ["Hard", "Clay", "Grass"])
+    gender = st.radio("Tour", ["ATP", "WTA"])
+    format_sets = st.radio("Best of...", [3, 5])
+    sets_to_win = format_sets // 2 + 1
+with col2:
+    bankroll = st.number_input("Bankroll (£)", min_value=10.0, value=1000.0, step=10.0)
+    commission = st.slider("Betfair Commission %", 0, 10, 5, 1)
+    half_kelly = st.checkbox("Use Half Kelly?", value=True)
+    pressure_logic = st.checkbox("Enable Pressure Logic?", value=True)
+
+# Player Selection
+players = sorted(stats_df["player"].unique())
+player_a = st.selectbox("Player A", players, key="pA")
+player_b = st.selectbox("Player B", players, key="pB")
+
+# Odds Inputs
+col3, col4 = st.columns(2)
+with col3:
+    odds_a = st.number_input(f"Betfair Odds {player_a}", value=2.0)
 with col4:
-    match_format = st.radio("Match Format", [3, 5], horizontal=True)
-with col5:
-    server = st.radio("Who is serving?", [player_a, player_b])
+    odds_b = st.number_input(f"Betfair Odds {player_b}", value=2.0)
 
-# --- Bankroll & Odds ---
-st.subheader("Odds & Toggles")
-bankroll = st.number_input("Your Bankroll (£)", value=1000.0, step=10.0)
-col6, col7, col8 = st.columns(3)
-with col6:
-    odds_a = st.number_input(f"Odds for {player_a}", value=2.0, key="odds_a")
-with col7:
-    odds_b = st.number_input(f"Odds for {player_b}", value=2.0, key="odds_b")
-with col8:
-    kelly_toggle = st.radio("Kelly Fraction", ["Full Kelly", "Half Kelly"], horizontal=True)
+# Score Inputs
+st.markdown("### 🟩 Scoreboard (Wimbledon Style)")
+sc1, sc2, sc3, sc4 = st.columns(4)
+sets_a = sc1.number_input(f"{player_a} Sets", 0, 5, 0)
+games_a = sc2.number_input(f"{player_a} Games", 0, 7, 0)
+points_a = sc3.number_input(f"{player_a} Points", 0, 4, 0)
 
-# --- Helper Functions ---
-def get_stat(player, surface, col):
-    row = stats_df[(stats_df["player"] == player) & (stats_df["surface"] == surface)]
-    return row[col].values[0] if not row.empty else 0.5
+sets_b = sc1.number_input(f"{player_b} Sets", 0, 5, 0)
+games_b = sc2.number_input(f"{player_b} Games", 0, 7, 0)
+points_b = sc3.number_input(f"{player_b} Points", 0, 4, 0)
 
-def calc_ev(prob, odds):
-    return (prob * odds) - 1
+server = st.radio("Who is serving?", [player_a, player_b])
 
-def kelly_stake(prob, odds, bankroll, kelly_fraction):
-    b = odds - 1
-    q = 1 - prob
-    stake_frac = (b * prob - q) / b
-    stake_frac = max(stake_frac, 0)
-    stake_frac = stake_frac if kelly_fraction == "Full Kelly" else stake_frac / 2
-    stake = bankroll * stake_frac
-    return round(max(stake, 2.0), 2)  # Enforce £2.00 minimum
+# --- RUN SIM ---
+if st.button("Run 100,000 Monte Carlo Simulations"):
+    st.info("Running simulations, this may take a few seconds...")
+    player_a_stats = get_stats(player_a, surface)
+    player_b_stats = get_stats(player_b, surface)
+    score = {
+        'sets': (sets_a, sets_b),
+        'games': (games_a, games_b),
+        'server': 'A' if server == player_a else 'B'
+    }
 
-# --- Calculate Win Percentages ---
-pA_serve = get_stat(player_a, surface, "serve_win_pct")
-pB_serve = get_stat(player_b, surface, "serve_win_pct")
+    win_prob = monte_sim(player_a_stats, player_b_stats, sets_to_win, score, pressure_adj=0.05 if pressure_logic else 0)
+    stake = kelly_stake(win_prob, odds_a, bankroll, commission, half=half_kelly)
 
-# Simplified implied win probability
-implied_prob_a = round((pA_serve + (1 - pB_serve)) / 2, 4)
-implied_prob_b = round(1 - implied_prob_a, 4)
-
-st.markdown(f"**Implied Probability**: `{player_a}` = `{implied_prob_a*100:.2f}%`, `{player_b}` = `{implied_prob_b*100:.2f}%`")
-
-# --- Expected Value ---
-ev_a = calc_ev(implied_prob_a, odds_a)
-ev_b = calc_ev(implied_prob_b, odds_b)
-st.markdown(f"**Expected Value (EV)**: `{player_a}` = `{ev_a:.3f}`, `{player_b}` = `{ev_b:.3f}`")
-
-# --- Kelly Stakes ---
-stake_a = kelly_stake(implied_prob_a, odds_a, bankroll, kelly_toggle)
-stake_b = kelly_stake(implied_prob_b, odds_b, bankroll, kelly_toggle)
-
-# --- Trade Suggestions ---
-st.subheader("💵 Trade Suggestions")
-if ev_a > 0:
-    st.success(f"🟢 Back {player_a} with £{stake_a} (EV: {ev_a:.3f})")
-else:
-    st.warning(f"🔴 No +EV back opportunity for {player_a}")
-
-if ev_b > 0:
-    st.success(f"🟢 Back {player_b} with £{stake_b} (EV: {ev_b:.3f})")
-else:
-    st.warning(f"🔴 No +EV back opportunity for {player_b}")
-
-# --- Placeholder for Future Features ---
-st.markdown("---")
-st.info("📊 Position tracking, dynamic Monte Carlo simulations, hedging logic, and real-time Betfair odds integration will be added soon!")
-
-# --- UI Styling ---
-st.markdown("""
-<style>
-div.block-container { padding-top: 2rem; }
-.stRadio > div { flex-direction: row !important; }
-.stNumberInput label { font-size: 14px !important; }
-</style>
-""", unsafe_allow_html=True)
+    st.success(f"Win Probability for {player_a}: {win_prob*100:.2f}%")
+    if stake >= 2:
+        net_profit = stake * (odds_a - 1) * (1 - commission/100)
+        st.markdown(f"💸 **Suggested Stake**: £{stake}  \n📈 **Estimated Profit**: £{net_profit:.2f}")
+    else:
+        st.warning("⚠️ No +EV bet or minimum £2 stake not reached.")
